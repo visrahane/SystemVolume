@@ -1,6 +1,7 @@
 //#pragma warning(disable:4996)
 #include "mpi.h"
-#include<stdio.h>
+#include "kdtree.c"
+#include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
 
@@ -14,13 +15,26 @@ long totalPoints = 0;
 struct AtomData {
 	int noOfAtoms;
 	float* atomCoords[3];
-}AtomDataObj,ProcAtomObj;
+}AtomDataObj, ProcAtomObj;
+
+struct kd_node_t* formKDTree(int atomCount) {
+	//form kd tree
+	struct kd_node_t *kdCoords, *root;
+	kdCoords = allocMemory(atomCount);
+	int i;
+	for (i = 0; i < atomCount; i++) {
+		kdCoords[i].x[0] = ProcAtomObj.atomCoords[0][i];
+		kdCoords[i].x[1] = ProcAtomObj.atomCoords[1][i];
+		kdCoords[i].x[2] = ProcAtomObj.atomCoords[2][i];
+	}
+	root = make_tree(kdCoords, atomCount, 0, 3);
+	return root;
+}
 
 long getHitsByPSequentialPoints(int procNo) {
 	int hitsCount = 0;
 	float xyz[3];
-	//	FILE *fop = fopen("mc.out", "w");
-	//
+
 	int procs[3] = { 20,2,2 };
 	int startX = procNo / (procs[1] * procs[2]);
 	float XPerProc = X / procs[0];
@@ -34,42 +48,47 @@ long getHitsByPSequentialPoints(int procNo) {
 	float ZPerProc = Z / procs[2];
 	startZ *= ZPerProc;
 
-	int countOfAtoms=fetchLocalAtoms(procs, procNo);
+	int countOfAtoms = fetchLocalAtoms(procs, procNo);
+	struct kd_node_t *found, testNode;
+	double best_dist;
+	struct kd_node_t* root = formKDTree(countOfAtoms);
 	//generate point
 	float x, y, z;
 	int i, points = 0;
 	double t1 = MPI_Wtime();
-		
+
 	for (x = startX; x < startX + XPerProc; x += CUT_OFF) {
 		for (y = startY; y < startY + YPerProc; y += CUT_OFF) {
 			for (z = startZ; z < startZ + ZPerProc; z += CUT_OFF) {
 				//check if within sys or outside
 				points++;
-				for (i = 0; i < countOfAtoms; i++) {
-					float xa = ProcAtomObj.atomCoords[0][i];
-					float ya = ProcAtomObj.atomCoords[1][i];
-					float za = ProcAtomObj.atomCoords[2][i];
-					if ((fabs(x - xa) <= CUT_OFF) && (fabs(y - ya) <= CUT_OFF) && (fabs(z - za) <= CUT_OFF)) {
-						//fprintf(fop, "\natom coords %f %f %f", xa, ya, za);
-						//fprintf(fop, "\nrandom Pt %f %f %f", xyz[0], xyz[1], xyz[2]);
-						//printf("\natom coords %f %f %f", xa, ya, za);
-
-						hitsCount++;
-						break;
-					}
+				found = 0;
+				testNode.x[0] = x;
+				testNode.x[1] = y;
+				testNode.x[2] = z;
+				nearest(root, &testNode, 0, 3, &found, &best_dist);
+				float xa = found->x[0];
+				float ya = found->x[1];
+				float za = found->x[2];
+				
+				if ((fabs(x - xa) <= CUT_OFF) && (fabs(y - ya) <= CUT_OFF) && (fabs(z - za) <= CUT_OFF)) {
+					hitsCount++;
 				}
+
 			}
 		}
 	}
-	printf("time for for loop is %f\n", MPI_Wtime() - t1);
-	printf("points:%d\n", points);
+	
+	//printf("points:%d\n", points);
 	MPI_Allreduce(&points, &totalPoints, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
 	return hitsCount;
 
 }
 
-int fetchLocalAtoms(int procs[],int myid) {
-	int i, count=0,xn,yn,zn,sid;
+
+
+int fetchLocalAtoms(int procs[], int myid) {
+	int i, count = 0, xn, yn, zn, sid;
 	float XPerProc = X / procs[0];
 	float YPerProc = Y / procs[1];
 	float ZPerProc = Z / procs[2];
